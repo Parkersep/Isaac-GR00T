@@ -15,3 +15,10 @@ src/gr00t/gr00tmetricbenchmarks/
 **/__pycache__/
 **/*.pyc
 **/*.egg-info/
+
+# Non-base-repo files
+src/gr00t/Notes/
+src/gr00t/wandb/
+src/gr00t/external_dependencies/
+src/gr00t/uv.lock
+src/gr00t/*.egg-info/

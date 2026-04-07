@@ -8,6 +8,12 @@
 /examples/LIBERO/libero_object_no_noops_1.0.0_lerobot/
 /examples/LIBERO/libero_spatial_no_noops_1.0.0_lerobot/
 
+
+/examples/SO100/finish_sandwich_lerobot/
+/examples/SO100/checkpoints/
+/examples/SO100/eval_results/
+
+
 # UV lock file
 uv.lock
 
@@ -25,6 +31,8 @@ out/
 recordings/
 plots/
 *.npz
+
+
 
 # C extensions
 *.so
