@@ -6,9 +6,8 @@ set -euo pipefail
 OFFER_ID=""
 HF_TOKEN=""
 WANDB_KEY=""
-DISK_SIZE="100"
+DISK_SIZE="150"
 IMAGE="par4ker/gr00t-dev:latest"
-LOCAL_REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -31,7 +30,28 @@ echo "==> Creating instance from offer $OFFER_ID (disk: ${DISK_SIZE}GB)..."
 CREATE_OUTPUT=$(vastai create instance "$OFFER_ID" --image "$IMAGE" --disk "$DISK_SIZE" 2>&1)
 echo "    $CREATE_OUTPUT"
 
-INSTANCE_ID=$(echo "$CREATE_OUTPUT" | grep -oP '\d+' | tail -1)
+# Parse instance ID from the create output - look for new_contract field first
+INSTANCE_ID=$(echo "$CREATE_OUTPUT" | python3 -c "
+import sys, json, re
+text = sys.stdin.read()
+# Try to parse as JSON or extract the dict portion
+try:
+    # Find the JSON/dict part of the output
+    match = re.search(r'\{.*\}', text)
+    if match:
+        # Handle Python-style dict (single quotes, True/False)
+        d = eval(match.group())
+        # new_contract is the instance ID
+        print(d.get('new_contract', ''))
+except Exception:
+    pass
+" 2>/dev/null)
+
+# Fallback: try grep for new_contract number
+if [ -z "$INSTANCE_ID" ]; then
+    INSTANCE_ID=$(echo "$CREATE_OUTPUT" | grep -oP "'new_contract':\s*\K\d+")
+fi
+
 if [ -z "$INSTANCE_ID" ]; then
     echo "ERROR: Could not parse instance ID from: $CREATE_OUTPUT"
     exit 1
@@ -40,30 +60,60 @@ echo "==> Instance ID: $INSTANCE_ID"
 
 # Wait for instance to have SSH info via 'vastai show instances'
 echo "==> Waiting for instance to be ready..."
+MAX_RETRIES=40
+RETRY_COUNT=0
 while true; do
-    INSTANCE_INFO=$(vastai show instances --raw 2>&1) || true
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [ "$RETRY_COUNT" -gt "$MAX_RETRIES" ]; then
+        echo "ERROR: Timed out waiting for instance after $((MAX_RETRIES * 15))s"
+        echo "    Debug: run 'vastai show instances --raw' to check instance state"
+        exit 1
+    fi
 
-    SSH_HOST=$(echo "$INSTANCE_INFO" | python3 -c "
+    # Capture stderr separately so it doesn't corrupt JSON
+    INSTANCE_INFO=$(vastai show instances --raw 2>/dev/null) || {
+        echo "    vastai command failed, retrying in 15s..."
+        sleep 15
+        continue
+    }
+
+    # Parse SSH connection info, printing debug on failure
+    read -r SSH_HOST SSH_PORT INST_STATUS < <(echo "$INSTANCE_INFO" | python3 -c "
 import json, sys
-data = json.load(sys.stdin)
+try:
+    data = json.load(sys.stdin)
+except json.JSONDecodeError as e:
+    print(f'JSON_ERR JSON_ERR json_parse_failed', file=sys.stdout)
+    sys.exit(0)
 for inst in data:
     if str(inst.get('id')) == '$INSTANCE_ID':
-        addr = inst.get('ssh_host') or inst.get('public_ipaddr', '')
-        print(addr)
-        break
-" 2>/dev/null || true)
+        status = inst.get('actual_status', inst.get('status_msg', 'unknown'))
+        # Try multiple field names for host
+        addr = inst.get('ssh_host') or inst.get('public_ipaddr') or ''
+        # Try multiple field names for port
+        port = inst.get('ssh_port') or inst.get('direct_port_start') or ''
+        # Fallback: parse from ports dict
+        if not port:
+            ports = inst.get('ports', {})
+            if isinstance(ports, dict) and '22/tcp' in ports:
+                mapping = ports['22/tcp']
+                if isinstance(mapping, list) and mapping:
+                    port = mapping[0].get('HostPort', '')
+                elif isinstance(mapping, (int, str)):
+                    port = str(mapping)
+        print(f'{addr} {port} {status}')
+        sys.exit(0)
+print('NO_MATCH NO_MATCH instance_not_found')
+" 2>&1) || true
 
-    SSH_PORT=$(echo "$INSTANCE_INFO" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for inst in data:
-    if str(inst.get('id')) == '$INSTANCE_ID':
-        port = inst.get('ssh_port') or inst.get('ports', {}).get('22/tcp', [{}])[0].get('HostPort', '')
-        print(port)
-        break
-" 2>/dev/null || true)
+    # Debug output on first attempt and every 4th retry
+    if [ "$RETRY_COUNT" -eq 1 ] || [ $((RETRY_COUNT % 4)) -eq 0 ]; then
+        echo "    [debug] host='$SSH_HOST' port='$SSH_PORT' status='$INST_STATUS' (attempt $RETRY_COUNT)"
+    fi
 
-    if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ] && [ "$SSH_HOST" != "None" ] && [ "$SSH_PORT" != "None" ]; then
+    if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ] \
+        && [ "$SSH_HOST" != "None" ] && [ "$SSH_PORT" != "None" ] \
+        && [ "$SSH_HOST" != "JSON_ERR" ] && [ "$SSH_HOST" != "NO_MATCH" ]; then
         break
     fi
     echo "    Instance not ready yet, retrying in 15s..."
@@ -82,8 +132,10 @@ done
 SSH_CMD="ssh -o StrictHostKeyChecking=accept-new -p $SSH_PORT root@$SSH_HOST -L 8080:localhost:8080"
 SCP_CMD="scp -o StrictHostKeyChecking=accept-new -P $SSH_PORT"
 
-echo "==> Uploading code to instance..."
-$SCP_CMD -r "$LOCAL_REPO_DIR" "root@$SSH_HOST:/workspace/gr00t"
+echo "==> Copying example configs..."
+$SSH_CMD "mkdir -p /workspace/gr00t/examples/G1-SDG /workspace/gr00t/examples/SO100"
+$SCP_CMD -r examples/G1-SDG "root@$SSH_HOST:/workspace/gr00t/examples/G1-SDG"
+$SCP_CMD -r examples/SO100 "root@$SSH_HOST:/workspace/gr00t/examples/SO100"
 
 echo "==> Installing uv and dependencies..."
 $SSH_CMD "cd /workspace/gr00t && pip install uv && uv pip install -e '.[dev]' && uv pip install flash-attn --no-build-isolation"
@@ -98,18 +150,10 @@ if [ -n "$WANDB_KEY" ]; then
     $SSH_CMD "wandb login $WANDB_KEY"
 fi
 
-echo "==> Downloading and converting dataset..."
-$SSH_CMD "cd /workspace/gr00t && uv run --project scripts/lerobot_conversion python scripts/lerobot_conversion/convert_v3_to_v2.py --repo-id izuluaga/finish_sandwich --root examples/SO100/finish_sandwich_lerobot"
-$SSH_CMD "cp /workspace/gr00t/examples/SO100/modality.json /workspace/gr00t/examples/SO100/finish_sandwich_lerobot/izuluaga/finish_sandwich/meta/modality.json"
-
 echo ""
 echo "==> Setup complete! Instance ID: $INSTANCE_ID"
-echo "    To start finetuning, SSH in and run:"
+echo "    SSH in with:"
 echo "    $SSH_CMD"
-echo "    cd /workspace/gr00t && bash examples/SO100/finetune_so100.sh"
-echo ""
-echo "    To copy checkpoints off when done:"
-echo "    $SCP_CMD -r root@$SSH_HOST:/tmp/so100_finetune ./checkpoints"
 echo ""
 echo "    To destroy when finished:"
 echo "    vastai destroy instance $INSTANCE_ID"

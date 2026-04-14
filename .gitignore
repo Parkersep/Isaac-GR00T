@@ -12,6 +12,7 @@
 /examples/SO100/finish_sandwich_lerobot/
 /examples/SO100/checkpoints/
 /examples/SO100/eval_results/
+/checkpoints/**
 
 
 # UV lock file
