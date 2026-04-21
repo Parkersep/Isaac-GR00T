@@ -153,6 +153,13 @@ Checkpoints are saved to `/tmp/so100_finetune` by default (set via `--output_dir
 
 The SDG dataset from IsaacLab has different state/action column names than the pre-registered `UNITREE_G1` config, so we use `NEW_EMBODIMENT` with a custom modality config at `examples/G1-SDG/g1_sdg_config.py`.
 
+**Copy the modality config to the remote first (run from your local machine):**
+```bash
+ssh -p <PORT> root@<IP> "mkdir -p /workspace/gr00t/examples/G1-SDG" && \
+scp -P <PORT> /home/parker/Nvidia/IsaacLab3/scripts/imitation_learning/locomanipulation_sdg/gr00t/data_config.py \
+    root@<IP>:/workspace/gr00t/examples/G1-SDG/g1_sdg_config.py
+```
+
 **Run: Remote Docker (Vast.ai instance)**
 ```bash
 python gr00t/experiment/launch_finetune.py \

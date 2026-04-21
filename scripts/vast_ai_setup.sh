@@ -130,12 +130,6 @@ while ! ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -p "$SSH_POR
 done
 
 SSH_CMD="ssh -o StrictHostKeyChecking=accept-new -p $SSH_PORT root@$SSH_HOST -L 8080:localhost:8080"
-SCP_CMD="scp -o StrictHostKeyChecking=accept-new -P $SSH_PORT"
-
-echo "==> Copying example configs..."
-$SSH_CMD "mkdir -p /workspace/gr00t/examples/G1-SDG /workspace/gr00t/examples/SO100"
-$SCP_CMD -r examples/G1-SDG "root@$SSH_HOST:/workspace/gr00t/examples/G1-SDG"
-$SCP_CMD -r examples/SO100 "root@$SSH_HOST:/workspace/gr00t/examples/SO100"
 
 echo "==> Installing uv and dependencies..."
 $SSH_CMD "cd /workspace/gr00t && pip install uv && uv pip install -e '.[dev]' && uv pip install flash-attn --no-build-isolation"
